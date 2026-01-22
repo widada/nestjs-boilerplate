@@ -9,17 +9,14 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
-
-interface JoinRoomDto {
-  room: string;
-  username: string;
-}
-
-interface SendMessageDto {
-  room: string;
-  message: string;
-  username: string;
-}
+import { ChatRoomService } from './services/chat-room.service';
+import {
+  JoinRoomDto,
+  LeaveRoomDto,
+  SendMessageDto,
+  TypingDto,
+  GetRoomUsersDto,
+} from './dto/chat.dto';
 
 @WebSocketGateway({
   cors: {
@@ -30,26 +27,21 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  private logger: Logger = new Logger('ChatGateway');
-  private activeUsers: Map<string, { username: string; rooms: Set<string> }> =
-    new Map();
+  private readonly logger = new Logger(ChatGateway.name);
+
+  constructor(private readonly chatRoomService: ChatRoomService) {}
 
   handleConnection(client: Socket) {
     this.logger.log(`Client connected: ${client.id}`);
   }
 
   handleDisconnect(client: Socket) {
-    const user = this.activeUsers.get(client.id);
-    if (user) {
-      user.rooms.forEach((room) => {
-        this.server.to(room).emit('userLeft', {
-          username: user.username,
-          room,
-          timestamp: new Date(),
-        });
-      });
-      this.activeUsers.delete(client.id);
-    }
+    const events = this.chatRoomService.removeUser(client.id);
+    
+    events.forEach((event) => {
+      this.server.to(event.room).emit('userLeft', event);
+    });
+
     this.logger.log(`Client disconnected: ${client.id}`);
   }
 
@@ -61,15 +53,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const { room, username } = data;
 
     client.join(room);
-
-    if (!this.activeUsers.has(client.id)) {
-      this.activeUsers.set(client.id, {
-        username,
-        rooms: new Set([room]),
-      });
-    } else {
-      this.activeUsers.get(client.id).rooms.add(room);
-    }
+    this.chatRoomService.addUser(client.id, username, room);
 
     this.server.to(room).emit('userJoined', {
       username,
@@ -77,36 +61,28 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       timestamp: new Date(),
     });
 
-    const usersInRoom = this.getUsersInRoom(room);
+    const usersInRoom = this.chatRoomService.getUsersInRoom(room);
     client.emit('roomUsers', {
       room,
       users: usersInRoom,
     });
 
     this.logger.log(`${username} joined room: ${room}`);
-
     return { success: true, room, username };
   }
 
   @SubscribeMessage('leaveRoom')
   handleLeaveRoom(
-    @MessageBody() data: { room: string },
+    @MessageBody() data: LeaveRoomDto,
     @ConnectedSocket() client: Socket,
   ) {
     const { room } = data;
-    const user = this.activeUsers.get(client.id);
+    const event = this.chatRoomService.removeUserFromRoom(client.id, room);
 
-    if (user) {
+    if (event) {
       client.leave(room);
-      user.rooms.delete(room);
-
-      this.server.to(room).emit('userLeft', {
-        username: user.username,
-        room,
-        timestamp: new Date(),
-      });
-
-      this.logger.log(`${user.username} left room: ${room}`);
+      this.server.to(room).emit('userLeft', event);
+      this.logger.log(`${event.username} left room: ${room}`);
     }
 
     return { success: true, room };
@@ -127,13 +103,12 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
 
     this.logger.log(`Message in ${room} from ${username}: ${message}`);
-
     return { success: true };
   }
 
   @SubscribeMessage('typing')
   handleTyping(
-    @MessageBody() data: { room: string; username: string; isTyping: boolean },
+    @MessageBody() data: TypingDto,
     @ConnectedSocket() client: Socket,
   ) {
     const { room, username, isTyping } = data;
@@ -148,18 +123,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage('getRoomUsers')
-  handleGetRoomUsers(@MessageBody() data: { room: string }) {
-    const users = this.getUsersInRoom(data.room);
+  handleGetRoomUsers(@MessageBody() data: GetRoomUsersDto) {
+    const users = this.chatRoomService.getUsersInRoom(data.room);
     return { room: data.room, users };
-  }
-
-  private getUsersInRoom(room: string): string[] {
-    const users: string[] = [];
-    this.activeUsers.forEach((user) => {
-      if (user.rooms.has(room)) {
-        users.push(user.username);
-      }
-    });
-    return users;
   }
 }
