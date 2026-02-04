@@ -69,10 +69,14 @@ export class CreatePostsTable1704067300000 implements MigrationInterface {
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     const table = await queryRunner.getTable('posts');
-    const foreignKey = table.foreignKeys.find(
-      (fk) => fk.columnNames.indexOf('authorId') !== -1,
-    );
-    await queryRunner.dropForeignKey('posts', foreignKey);
+    if (table) {
+      const foreignKey = table.foreignKeys.find(
+        (fk) => fk.columnNames.indexOf('authorId') !== -1,
+      );
+      if (foreignKey) {
+        await queryRunner.dropForeignKey('posts', foreignKey);
+      }
+    }
     await queryRunner.dropTable('posts');
   }
 }
