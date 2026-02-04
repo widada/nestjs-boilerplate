@@ -14,7 +14,10 @@ export class ChatRoomService {
         rooms: new Set([room]),
       });
     } else {
-      this.activeUsers.get(clientId).rooms.add(room);
+      const user = this.activeUsers.get(clientId);
+      if (user) {
+        user.rooms.add(room);
+      }
     }
     this.logger.log(`${username} added to room: ${room}`);
   }
