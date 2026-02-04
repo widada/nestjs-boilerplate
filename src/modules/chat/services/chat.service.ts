@@ -11,7 +11,10 @@ export class ChatService {
     private roomRepository: Repository<ChatRoom>,
   ) {}
 
-  async createRoom(createRoomDto: CreateRoomDto, userId: string): Promise<ChatRoom> {
+  async createRoom(
+    createRoomDto: CreateRoomDto,
+    userId: string,
+  ): Promise<ChatRoom> {
     const room = this.roomRepository.create({
       ...createRoomDto,
       createdBy: userId,
