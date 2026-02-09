@@ -1,12 +1,15 @@
 # NestJS Boilerplate
 
-A production-ready NestJS boilerplate with authentication, database management, REST API, and real-time WebSocket chat functionality.
+A production-ready NestJS boilerplate with authentication, database management, REST API, real-time WebSocket chat, product catalog, order management, and Stripe payment integration.
 
 ## Features
 
 -  **JWT Authentication** - Secure user authentication with Passport
 -  **TypeORM Integration** - MySQL database with migration support
--  **CRUD Operations** - Complete user and post management
+-  **CRUD Operations** - Complete user, post, and product management
+-  **Product Catalog** - Full product management with stock tracking
+-  **Order Management** - Order creation, cancellation, and status tracking
+-  **Stripe Payments** - Payment intent creation, webhooks, refunds
 -  **Real-time Chat** - WebSocket chat with Socket.IO
 -  **Validation** - Request validation with class-validator
 -  **Clean Architecture** - Modular structure following NestJS best practices
@@ -16,6 +19,7 @@ A production-ready NestJS boilerplate with authentication, database management, 
 - **Framework**: NestJS 11
 - **Database**: MySQL + TypeORM
 - **Authentication**: JWT + Passport
+- **Payments**: Stripe
 - **WebSocket**: Socket.IO
 - **Validation**: class-validator & class-transformer
 - **Password Hashing**: bcrypt
@@ -45,6 +49,10 @@ DB_DATABASE=nestjs_boilerplate
 # JWT
 JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
 JWT_EXPIRATION=7d
+
+# Stripe
+STRIPE_SECRET_KEY=sk_test_your_stripe_secret_key
+STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
 
 # Application
 PORT=3000
@@ -149,6 +157,147 @@ Content-Type: application/json
 DELETE /api/posts/:id
 Authorization: Bearer {token}
 ```
+
+### Products
+
+#### Create Product (Protected)
+```bash
+POST /api/products
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "name": "Wireless Headphones",
+  "description": "Premium noise-cancelling headphones",
+  "priceUsd": 99.99,
+  "imageUrl": "https://example.com/headphones.jpg",
+  "stock": 50,
+  "isActive": true
+}
+```
+
+#### Get All Products
+```bash
+GET /api/products
+```
+Returns only active products, sorted by newest first.
+
+#### Get Single Product
+```bash
+GET /api/products/:id
+```
+
+#### Update Product (Protected)
+```bash
+PATCH /api/products/:id
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "priceUsd": 79.99,
+  "stock": 100
+}
+```
+
+#### Delete Product (Protected)
+```bash
+DELETE /api/products/:id
+Authorization: Bearer {token}
+```
+
+### Orders
+
+Orders are tied to the authenticated user. Creating an order automatically creates a Stripe PaymentIntent and reserves product stock.
+
+#### Create Order (Protected)
+```bash
+POST /api/orders
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "items": [
+    { "productId": "product-uuid-1", "quantity": 2 },
+    { "productId": "product-uuid-2", "quantity": 1 }
+  ]
+}
+
+Response:
+{
+  "id": "order-uuid",
+  "userId": "user-uuid",
+  "totalAmountUsd": 279.97,
+  "status": "pending",
+  "stripePaymentIntentId": "pi_...",
+  "stripeClientSecret": "pi_..._secret_...",
+  "items": [ ... ],
+  "createdAt": "2026-02-09T..."
+}
+```
+Use the `stripeClientSecret` on the frontend to confirm the payment with Stripe.js.
+
+#### Get My Orders (Protected)
+```bash
+GET /api/orders
+Authorization: Bearer {token}
+```
+Returns all orders for the authenticated user, sorted by newest first.
+
+#### Get Single Order (Protected)
+```bash
+GET /api/orders/:id
+Authorization: Bearer {token}
+```
+Users can only view their own orders.
+
+#### Cancel Order (Protected)
+```bash
+POST /api/orders/:id/cancel
+Authorization: Bearer {token}
+```
+Cancels a pending order, releases the Stripe PaymentIntent, and restores product stock. Only orders with `pending` status can be cancelled.
+
+**Order Statuses**: `pending` → `paid` | `failed` | `cancelled` | `refunded`
+
+### Stripe Payments
+
+The application integrates with Stripe for payment processing.
+
+#### How It Works
+
+1. **Create Order** → A Stripe `PaymentIntent` is automatically created
+2. **Frontend** → Use the `stripeClientSecret` from the order response to confirm payment via [Stripe.js](https://stripe.com/docs/js)
+3. **Webhook** → Stripe notifies your server of payment success/failure
+
+#### Stripe Webhook
+```bash
+POST /api/orders/webhook/stripe
+```
+This endpoint receives Stripe webhook events. Configure it in your [Stripe Dashboard](https://dashboard.stripe.com/webhooks).
+
+Handled events:
+- `payment_intent.succeeded` → Order status set to `paid`
+- `payment_intent.payment_failed` → Order status set to `failed`
+
+#### Webhook Setup (Local Development)
+
+Use the [Stripe CLI](https://stripe.com/docs/stripe-cli) to forward webhooks locally:
+
+```bash
+stripe listen --forward-to localhost:3000/api/orders/webhook/stripe
+```
+
+Copy the webhook signing secret and add it to your `.env` as `STRIPE_WEBHOOK_SECRET`.
+
+#### Stripe Service Methods
+
+| Method | Description |
+|--------|-------------|
+| `createPaymentIntent(amountUsd, metadata)` | Creates a new PaymentIntent |
+| `getPaymentIntent(paymentIntentId)` | Retrieves a PaymentIntent |
+| `cancelPaymentIntent(paymentIntentId)` | Cancels a PaymentIntent |
+| `refundPayment(paymentIntentId)` | Refunds a completed payment |
+| `constructWebhookEvent(payload, signature, secret)` | Verifies and parses webhook events |
 
 ### Chat Rooms
 
@@ -279,7 +428,9 @@ src/
 ├── database/                 # Database migrations
 │   ├── 1704067200000-CreateUsersTable.ts
 │   ├── 1704067300000-CreatePostsTable.ts
-│   └── 1704067400000-CreateChatTables.ts
+│   ├── 1704067400000-CreateChatTables.ts
+│   ├── 1704067500000-CreateProductsTable.ts
+│   └── 1704067600000-CreateOrdersTable.ts
 │
 ├── modules/                  # Feature modules
 │   ├── auth/                # Authentication module
@@ -299,6 +450,24 @@ src/
 │   │   ├── posts.controller.ts
 │   │   ├── posts.service.ts
 │   │   └── posts.module.ts
+│   │
+│   ├── products/           # Products module (Catalog)
+│   │   ├── dto/           # Create/Update Product DTOs
+│   │   ├── entities/      # Product entity
+│   │   ├── products.controller.ts
+│   │   ├── products.service.ts
+│   │   └── products.module.ts
+│   │
+│   ├── orders/             # Orders module (E-commerce)
+│   │   ├── dto/           # Order DTOs
+│   │   ├── entities/      # Order & OrderItem entities
+│   │   ├── orders.controller.ts   # REST + Stripe webhook
+│   │   ├── orders.service.ts
+│   │   └── orders.module.ts
+│   │
+│   ├── payments/           # Payments module (Stripe)
+│   │   ├── stripe.service.ts      # Stripe API integration
+│   │   └── payments.module.ts     # Global module
 │   │
 │   └── chat/               # Chat module (WebSocket)
 │       ├── dto/           # Chat DTOs
@@ -320,12 +489,16 @@ src/
 
 ### Module Architecture
 
-#### REST API Modules (Posts, Auth)
+#### REST API Modules (Posts, Auth, Products, Orders)
 - **Controller**: Handles HTTP requests and responses
 - **Service**: Business logic and database operations
 - **Entity**: TypeORM database model
 - **DTO**: Data validation and transformation
 - **Module**: Binds everything together
+
+#### Payments Module (Stripe)
+- **StripeService**: Wraps the Stripe SDK for PaymentIntent creation, cancellation, refunds, and webhook verification
+- **Global Module**: Exported globally so any module can inject `StripeService`
 
 #### WebSocket Module (Chat)
 - **Gateway**: Handles WebSocket events and connections
